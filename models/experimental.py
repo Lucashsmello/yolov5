@@ -1,17 +1,20 @@
 # This file contains experimental modules
 
-if(__package__ is None or __package__ == ""):
+if(__package__ is None or __package__ == "" or __package__== "models"):
     from models.common import *
+    from utils import google_utils
 else:
     from .common import *
+    from ..utils import google_utils
 
 class CrossConv(nn.Module):
-    # Cross Convolution
-    def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
+    # Cross Convolution Downsample
+    def __init__(self, c1, c2, k=3, s=1, g=1, e=1.0, shortcut=False):
+        # ch_in, ch_out, kernel, stride, groups, expansion, shortcut
         super(CrossConv, self).__init__()
         c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, (1, 3), 1)
-        self.cv2 = Conv(c_, c2, (3, 1), 1, g=g)
+        self.cv1 = Conv(c1, c_, (1, k), (1, s))
+        self.cv2 = Conv(c_, c2, (k, 1), (s, 1), g=g)
         self.add = shortcut and c1 == c2
 
     def forward(self, x):
@@ -29,7 +32,7 @@ class C3(nn.Module):
         self.cv4 = Conv(2 * c_, c2, 1, 1)
         self.bn = nn.BatchNorm2d(2 * c_)  # applied to cat(cv2, cv3)
         self.act = nn.LeakyReLU(0.1, inplace=True)
-        self.m = nn.Sequential(*[CrossConv(c_, c_, shortcut, g, e=1.0) for _ in range(n)])
+        self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
 
     def forward(self, x):
         y1 = self.cv3(self.m(self.cv1(x)))
@@ -86,17 +89,6 @@ class GhostBottleneck(nn.Module):
         return self.conv(x) + self.shortcut(x)
 
 
-class ConvPlus(nn.Module):
-    # Plus-shaped convolution
-    def __init__(self, c1, c2, k=3, s=1, g=1, bias=True):  # ch_in, ch_out, kernel, stride, groups
-        super(ConvPlus, self).__init__()
-        self.cv1 = nn.Conv2d(c1, c2, (k, 1), s, (k // 2, 0), groups=g, bias=bias)
-        self.cv2 = nn.Conv2d(c1, c2, (1, k), s, (0, k // 2), groups=g, bias=bias)
-
-    def forward(self, x):
-        return self.cv1(x) + self.cv2(x)
-
-
 class MixConv2d(nn.Module):
     # Mixed Depthwise Conv https://arxiv.org/abs/1907.09595
     def __init__(self, c1, c2, k=(1, 3), s=1, equal_ch=True):
@@ -119,3 +111,34 @@ class MixConv2d(nn.Module):
 
     def forward(self, x):
         return x + self.act(self.bn(torch.cat([m(x) for m in self.m], 1)))
+
+
+class Ensemble(nn.ModuleList):
+    # Ensemble of models
+    def __init__(self):
+        super(Ensemble, self).__init__()
+
+    def forward(self, x, augment=False):
+        y = []
+        for module in self:
+            y.append(module(x, augment)[0])
+        # y = torch.stack(y).max(0)[0]  # max ensemble
+        # y = torch.cat(y, 1)  # nms ensemble
+        y = torch.stack(y).mean(0)  # mean ensemble
+        return y, None  # inference, train output
+
+
+def attempt_load(weights, map_location=None):
+    # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
+    model = Ensemble()
+    for w in weights if isinstance(weights, list) else [weights]:
+        google_utils.attempt_download(w)
+        model.append(torch.load(w, map_location=map_location)['model'].float().fuse().eval())  # load FP32 model
+
+    if len(model) == 1:
+        return model[-1]  # return model
+    else:
+        print('Ensemble created with %s\n' % weights)
+        for k in ['names', 'stride']:
+            setattr(model, k, getattr(model[-1], k))
+        return model  # return ensemble
