@@ -1,6 +1,9 @@
 # This file contains modules common to various models
 
-from utils.utils import *
+if(__package__ is None or __package__ == ""):
+    from utils.utils import *
+else:
+    from ..utils.utils import *
 
 
 def autopad(k, p=None):  # kernel, padding

@@ -1,7 +1,9 @@
 # This file contains experimental modules
 
-from models.common import *
-
+if(__package__ is None or __package__ == ""):
+    from models.common import *
+else:
+    from .common import *
 
 class CrossConv(nn.Module):
     # Cross Convolution

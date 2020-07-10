@@ -1,7 +1,9 @@
 import argparse
 
-from models.experimental import *
-
+if(__package__ is None or __package__ == ""):
+    from models.experimental import *
+else:
+    from .experimental import *
 
 class Detect(nn.Module):
     def __init__(self, nc=80, anchors=()):  # detection layer
