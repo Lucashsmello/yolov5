@@ -1,6 +1,6 @@
 # This file contains modules common to various models
 
-if(__package__ is None or __package__ == ""):
+if(__package__ is None or __package__ == "" or __package__== "models"):
     from utils.utils import *
 else:
     from ..utils.utils import *
