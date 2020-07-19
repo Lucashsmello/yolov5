@@ -119,8 +119,7 @@ def train(hyp):
 
         # load model
         try:
-            ckpt['model'] = {k: v for k, v in ckpt['model'].float().state_dict().items()
-                             if model.state_dict()[k].shape == v.shape}  # to FP32, filter
+            ckpt['model'] = {k: v for k, v in ckpt['model'].float().state_dict().items() if k in model.state_dict()}
             model.load_state_dict(ckpt['model'], strict=False)
         except KeyError as e:
             s = "%s is not compatible with %s. This may be due to model differences or %s may be out of date. " \
@@ -152,20 +151,20 @@ def train(hyp):
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
 
     # Distributed training
-    if device.type != 'cpu' and torch.cuda.device_count() > 1 and torch.distributed.is_available():
+    if device.type != 'cpu' and torch.cuda.device_count() > 1 and dist.is_available():
         dist.init_process_group(backend='nccl',  # distributed backend
                                 init_method='tcp://127.0.0.1:9999',  # init method
                                 world_size=1,  # number of nodes
                                 rank=0)  # node rank
+        # model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)  # requires world_size > 1
         model = torch.nn.parallel.DistributedDataParallel(model)
-        # pip install torch==1.4.0+cu100 torchvision==0.5.0+cu100 -f https://download.pytorch.org/whl/torch_stable.html
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
-    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Correct your labels or your model.' % (mlc, nc, opt.cfg)
+    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Testloader
     testloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,
@@ -186,6 +185,7 @@ def train(hyp):
     # model._initialize_biases(cf.to(device))
     plot_labels(labels, save_dir=log_dir)
     if tb_writer:
+        # tb_writer.add_hparams(hyp, {})  # causes duplicate https://github.com/ultralytics/yolov5/pull/384
         tb_writer.add_histogram('classes', c, 0)
 
     # Check anchors
@@ -193,7 +193,7 @@ def train(hyp):
         check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
 
     # Exponential moving average
-    ema = torch_utils.ModelEMA(model, updates=start_epoch * nb / accumulate)
+    ema = torch_utils.ModelEMA(model)
 
     # Start training
     t0 = time.time()
@@ -223,7 +223,7 @@ def train(hyp):
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
+            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
 
             # Warmup
             if ni <= nw:
@@ -287,7 +287,7 @@ def train(hyp):
         scheduler.step()
 
         # mAP
-        ema.update_attr(model)
+        ema.update_attr(model, include=['md', 'nc', 'hyp', 'gr', 'names', 'stride'])
         final_epoch = epoch + 1 == epochs
         if not opt.notest or final_epoch:  # Calculate mAP
             results, maps, times = test.test(opt.data,
@@ -303,12 +303,12 @@ def train(hyp):
         with open(results_file, 'a') as f:
             f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
         if len(opt.name) and opt.bucket:
-            os.system('gsutil cp results.txt gs://%s/results/results%s.txt' % (opt.bucket, opt.name))
+            os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 
         # Tensorboard
         if tb_writer:
             tags = ['train/giou_loss', 'train/obj_loss', 'train/cls_loss',
-                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/F1',
+                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
                     'val/giou_loss', 'val/obj_loss', 'val/cls_loss']
             for x, tag in zip(list(mloss[:-1]) + list(results), tags):
                 tb_writer.add_scalar(tag, x, epoch)
