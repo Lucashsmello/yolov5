@@ -14,16 +14,12 @@ class Yolov5Predictor:
         self.yolo_model = yolo_model
 
     @staticmethod
-    def load(weights_path, img_shape=640, conf_thres=0.4, iou_thres=0.5, device='cuda:0') -> Yolov5Predictor:
-        # from . import models
-        # sys.modules['models']=models
-        # print(sys.modules.keys())
-        torch.serialization.register_package
+    def load(weights_path, img_shape, conf_thres=0.4, iou_thres=0.5, device='cuda:0') -> Yolov5Predictor:
+        """
+        img_shape: (height, width)
+        """
         yolo_model = torch.load(weights_path, map_location=device, pickle_module=unpickler)['model'].float().eval()
         predictor = Yolov5Predictor(img_shape, conf_thres, iou_thres, yolo_model)
-
-        # net.load_state_dict(saved_object['model'])
-        # net.to(DEVICE).eval()
 
         return predictor
 
