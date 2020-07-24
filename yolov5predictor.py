@@ -25,10 +25,7 @@ class Yolov5Predictor:
 
     def preProcessImage(self, img0, device='cuda:0'):
         img = preprocessImage(img0, self.img_shape)
-        img = torch.from_numpy(img).to(device)
-        # img = img.half() if half else img.float()  # uint8 to fp16/32
-        img = img.float()
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        img = torch.from_numpy(img).to(device).float().div(255)
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
         return img
@@ -40,6 +37,6 @@ class Yolov5Predictor:
             preds = non_max_suppression(preds, self.conf_thres, self.iou_thres, classes=None, agnostic=None)[0]
 
             if(preds is None):
-                return []
+                return torch.empty(0)
             preds[:, :4] = scale_coords(img.shape[2:], preds[:, :4], img0.shape).round()
         return preds
