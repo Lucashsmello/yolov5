@@ -2,7 +2,7 @@ from setuptools import setup
 
 modules=['models.common','models.yolo', 'models.experimental','yolov5predictor', 'unpickler']
 setup(name='ultralytics-yolov5',
-    version='0.2',
+    version='0.3',
 #    description='',
     url='https://github.com/Lucashsmello/yolov5',
     maintainer='Lucas Mello',
