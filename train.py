@@ -113,6 +113,12 @@ def train(hyp, tb_writer, opt, device):
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
     print('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
     del pg0, pg1, pg2
+    
+    # Scheduler https://arxiv.org/pdf/1812.01187.pdf
+    lf = lambda x: (((1 + math.cos(x * math.pi / epochs)) / 2) ** 1.0) * 0.8 + 0.2  # cosine
+    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+    # https://discuss.pytorch.org/t/a-problem-occured-when-resuming-an-optimizer/28822
+    # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # Load Model
     with torch_distributed_zero_first(rank):
@@ -157,12 +163,6 @@ def train(hyp, tb_writer, opt, device):
     # Mixed precision training https://github.com/NVIDIA/apex
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
-
-    # Scheduler https://arxiv.org/pdf/1812.01187.pdf
-    lf = lambda x: (((1 + math.cos(x * math.pi / epochs)) / 2) ** 1.0) * 0.8 + 0.2  # cosine
-    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
-    # https://discuss.pytorch.org/t/a-problem-occured-when-resuming-an-optimizer/28822
-    # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # DP mode
     if device.type != 'cpu' and rank == -1 and torch.cuda.device_count() > 1:
@@ -346,24 +346,24 @@ def train(hyp, tb_writer, opt, device):
                                                  dataloader=testloader,
                                                  save_dir=log_dir)
 
-                # Write
-                with open(results_file, 'a') as f:
-                    f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
-                if len(opt.name) and opt.bucket:
-                    os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
+            # Write
+            with open(results_file, 'a') as f:
+                f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
+            if len(opt.name) and opt.bucket:
+                os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 
-                # Tensorboard
-                if tb_writer:
-                    tags = ['train/giou_loss', 'train/obj_loss', 'train/cls_loss',
-                            'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
-                            'val/giou_loss', 'val/obj_loss', 'val/cls_loss']
-                    for x, tag in zip(list(mloss[:-1]) + list(results), tags):
-                        tb_writer.add_scalar(tag, x, epoch)
+            # Tensorboard
+            if tb_writer:
+                tags = ['train/giou_loss', 'train/obj_loss', 'train/cls_loss',
+                        'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
+                        'val/giou_loss', 'val/obj_loss', 'val/cls_loss']
+                for x, tag in zip(list(mloss[:-1]) + list(results), tags):
+                    tb_writer.add_scalar(tag, x, epoch)
 
-                # Update best mAP
-                fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
-                if fi > best_fitness:
-                    best_fitness = fi
+            # Update best mAP
+            fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
+            if fi > best_fitness:
+                best_fitness = fi
 
             # Save model
             save = (not opt.nosave) or (final_epoch and not opt.evolve)
@@ -377,7 +377,7 @@ def train(hyp, tb_writer, opt, device):
 
                 # Save last, best and delete
                 torch.save(ckpt, last)
-                if (best_fitness == fi) and not final_epoch:
+                if best_fitness == fi: 
                     torch.save(ckpt, best)
                 del ckpt
         # end epoch ----------------------------------------------------------------------------------------------------
