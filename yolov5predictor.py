@@ -33,7 +33,7 @@ class Yolov5Predictor:
     def detect(self, img0):
         with torch.no_grad():
             img = self.preProcessImage(img0)
-            preds = self.yolo_model(img)[0]
+            preds = self.yolo_model(img)[0].cpu()
             preds = non_max_suppression(preds, self.conf_thres, self.iou_thres, classes=None, agnostic=None)[0]
 
             if(preds is None):
