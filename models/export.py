@@ -6,8 +6,10 @@ Usage:
 
 import argparse
 
-from models.common import *
-from utils import google_utils
+import torch
+
+from utils.general import set_logging
+from utils.google_utils import attempt_download
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -17,12 +19,13 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     opt.img_size *= 2 if len(opt.img_size) == 1 else 1  # expand
     print(opt)
+    set_logging()
 
     # Input
     img = torch.zeros((opt.batch_size, 3, *opt.img_size))  # image size(1,3,320,192) iDetection
 
     # Load PyTorch model
-    google_utils.attempt_download(opt.weights)
+    attempt_download(opt.weights)
     model = torch.load(opt.weights, map_location=torch.device('cpu'))['model'].float()
     model.eval()
     model.model[-1].export = True  # set Detect() layer export=True

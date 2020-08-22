@@ -14,7 +14,7 @@ from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from .utils import xyxy2xywh, xywh2xyxy, torch_distributed_zero_first
+from .general import xyxy2xywh, xywh2xyxy, torch_distributed_zero_first
 
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng']
@@ -47,9 +47,9 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      local_rank=-1, world_size=1):
+                      rank=-1, world_size=1, workers=8):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache.
-    with torch_distributed_zero_first(local_rank):
+    with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                       augment=augment,  # augment images
                                       hyp=hyp,  # augmentation hyperparameters
@@ -57,11 +57,12 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       cache_images=cache,
                                       single_cls=opt.single_cls,
                                       stride=int(stride),
-                                      pad=pad)
+                                      pad=pad,
+                                      rank=rank)
 
     batch_size = min(batch_size, len(dataset))
-    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, 8])  # number of workers
-    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset) if local_rank != -1 else None
+    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
                                              num_workers=nw,
@@ -287,7 +288,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, rank=-1):
         try:
             f = []  # image files
             for p in path if isinstance(path, list) else [path]:
@@ -367,10 +368,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Cache labels
         create_datasubset, extract_bounding_boxes, labels_loaded = False, False, False
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
-        pbar = tqdm(self.label_files)
-        for i, file in enumerate(pbar):
+        pbar = enumerate(self.label_files)
+        if rank in [-1, 0]:
+            pbar = tqdm(pbar)
+        for i, file in pbar:
             l = self.labels[i]  # label
-            if l.shape[0]:
+            if l is not None and l.shape[0]:
                 assert l.shape[1] == 5, '> 5 label columns: %s' % file
                 assert (l >= 0).all(), 'negative labels: %s' % file
                 assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
@@ -415,8 +418,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 ne += 1  # print('empty labels for image %s' % self.img_files[i])  # file empty
                 # os.system("rm '%s' '%s'" % (self.img_files[i], self.label_files[i]))  # remove
 
-            pbar.desc = 'Scanning labels %s (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
-                cache_path, nf, nm, ne, nd, n)
+            if rank in [-1, 0]:
+                pbar.desc = 'Scanning labels %s (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
+                    cache_path, nf, nm, ne, nd, n)
         if nf == 0:
             s = 'WARNING: No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
             print(s)
@@ -452,7 +456,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     l = np.zeros((0, 5), dtype=np.float32)
                 x[img] = [l, shape]
             except Exception as e:
-                x[img] = None
+                x[img] = [None, None]
                 print('WARNING: %s: %s' % (img, e))
 
         x['hash'] = get_hash(self.label_files + self.img_files)
@@ -479,11 +483,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
-            # if random.random() < 0.5:
-            #     img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
-            #     r = np.random.beta(0.3, 0.3)  # mixup ratio, alpha=beta=0.3
-            #     img = (img * r + img2 * (1 - r)).astype(np.uint8)
-            #     labels = np.concatenate((labels, labels2), 0)
+            if random.random() < hyp['mixup']:
+                img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
+                r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
+                img = (img * r + img2 * (1 - r)).astype(np.uint8)
+                labels = np.concatenate((labels, labels2), 0)
 
         else:
             # Load image
@@ -508,11 +512,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # Augment imagespace
             if not self.mosaic:
-                img, labels = random_affine(img, labels,
-                                            degrees=hyp['degrees'],
-                                            translate=hyp['translate'],
-                                            scale=hyp['scale'],
-                                            shear=hyp['shear'])
+                img, labels = random_perspective(img, labels,
+                                                 degrees=hyp['degrees'],
+                                                 translate=hyp['translate'],
+                                                 scale=hyp['scale'],
+                                                 shear=hyp['shear'],
+                                                 perspective=hyp['perspective'])
 
             # Augment colorspace
             augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
@@ -523,27 +528,22 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         nL = len(labels)  # number of labels
         if nL:
-            # convert xyxy to xywh
-            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
-
-            # Normalize coordinates 0 - 1
-            labels[:, [2, 4]] /= img.shape[0]  # height
-            labels[:, [1, 3]] /= img.shape[1]  # width
+            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
+            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
+            labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
 
         if self.augment:
-            # random left-right flip
-            lr_flip = True
-            if lr_flip and random.random() < 0.5:
-                img = np.fliplr(img)
-                if nL:
-                    labels[:, 1] = 1 - labels[:, 1]
-
-            # random up-down flip
-            ud_flip = False
-            if ud_flip and random.random() < 0.5:
+            # flip up-down
+            if random.random() < hyp['flipud']:
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
+
+            # flip left-right
+            if random.random() < hyp['fliplr']:
+                img = np.fliplr(img)
+                if nL:
+                    labels[:, 1] = 1 - labels[:, 1]
 
         labels_out = torch.zeros((nL, 6))
         if nL:
@@ -660,12 +660,13 @@ def load_mosaic(self, index):
 
     # Augment
     # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
-    img4, labels4 = random_affine(img4, labels4,
-                                  degrees=self.hyp['degrees'],
-                                  translate=self.hyp['translate'],
-                                  scale=self.hyp['scale'],
-                                  shear=self.hyp['shear'],
-                                  border=self.mosaic_border)  # border to remove
+    img4, labels4 = random_perspective(img4, labels4,
+                                       degrees=self.hyp['degrees'],
+                                       translate=self.hyp['translate'],
+                                       scale=self.hyp['scale'],
+                                       shear=self.hyp['shear'],
+                                       perspective=self.hyp['perspective'],
+                                       border=self.mosaic_border)  # border to remove
 
     return img4, labels4
 
@@ -720,13 +721,22 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
     return img, ratio, (dw, dh)
 
 
-def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, border=(0, 0)):
+def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0, border=(0, 0)):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
-    # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
     # targets = [cls, xyxy]
 
     height = img.shape[0] + border[0] * 2  # shape(h,w,c)
     width = img.shape[1] + border[1] * 2
+
+    # Center
+    C = np.eye(3)
+    C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
+    C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
+
+    # Perspective
+    P = np.eye(3)
+    P[2, 0] = random.uniform(-perspective, perspective)  # x perspective (about y)
+    P[2, 1] = random.uniform(-perspective, perspective)  # y perspective (about x)
 
     # Rotation and Scale
     R = np.eye(3)
@@ -734,22 +744,31 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
     # s = 2 ** random.uniform(-scale, scale)
-    R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
-
-    # Translation
-    T = np.eye(3)
-    T[0, 2] = random.uniform(-translate, translate) * img.shape[1] + border[1]  # x translation (pixels)
-    T[1, 2] = random.uniform(-translate, translate) * img.shape[0] + border[0]  # y translation (pixels)
+    R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
     # Shear
     S = np.eye(3)
     S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
+    # Translation
+    T = np.eye(3)
+    T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * width  # x translation (pixels)
+    T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
+
     # Combined rotation matrix
-    M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
+    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
-        img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
+        if perspective:
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+        else:  # affine
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+
+    # Visualize
+    # import matplotlib.pyplot as plt
+    # ax = plt.subplots(1, 2, figsize=(12, 6))[1].ravel()
+    # ax[0].imshow(img[:, :, ::-1])  # base
+    # ax[1].imshow(img2[:, :, ::-1])  # warped
 
     # Transform label coordinates
     n = len(targets)
@@ -757,7 +776,11 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
         # warp points
         xy = np.ones((n * 4, 3))
         xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
-        xy = (xy @ M.T)[:, :2].reshape(n, 8)
+        xy = xy @ M.T  # transform
+        if perspective:
+            xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 8)  # rescale
+        else:  # affine
+            xy = xy[:, :2].reshape(n, 8)
 
         # create new boxes
         x = xy[:, [0, 2, 4, 6]]
@@ -785,7 +808,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     return img, targets
 
 
-def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):  # box1(4,n), box2(4,n)
+def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.1):  # box1(4,n), box2(4,n)
     # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
     w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
     w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
