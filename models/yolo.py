@@ -3,10 +3,9 @@ import logging
 import sys
 from copy import deepcopy
 
-sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 logger = logging.getLogger(__name__)
-
-if(__package__ is None or __package__ == ""):
+if(__package__ is None or __package__ == "" or __package__ == 'models'):
+    sys.path.append('./')  # to run '$ python *.py' files in subdirectories
     from models.common import *
     from models.experimental import *
     from utils.autoanchor import check_anchor_order

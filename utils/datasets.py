@@ -181,7 +181,7 @@ class LoadImages:  # for inference
             assert img0 is not None, 'Image Not Found ' + path
             print(f'image {self.count}/{self.nf} {path}: ', end='')
 
-        img = preprocessImage(img0, new_img_size=self.img_size)
+        img = preprocessImage(img0, new_img_size=self.img_size, stride=self.stride)
 
         return path, img, img0, self.cap
 
@@ -614,7 +614,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
 def preprocessImage(img0, new_img_size, stride):
     # Padded resize
-    img = letterbox(img0, new_shape=self.img_size, stride=stride)[0]
+    img = letterbox(img0, new_shape=new_img_size, stride=stride)[0]
 
     # Convert
     img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
