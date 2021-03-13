@@ -8,80 +8,26 @@
 #     /yolov5
 
 start=$(date +%s)
+mkdir -p ../tmp
+cd ../tmp/
 
-# handle optional download dir
-if [ -z "$1" ]; then
-  # navigate to ~/tmp
-  echo "navigating to ../tmp/ ..."
-  mkdir -p ../tmp
-  cd ../tmp/
-else
-  # check if is valid directory
-  if [ ! -d $1 ]; then
-    echo $1 "is not a valid directory"
-    exit 0
-  fi
-  echo "navigating to" $1 "..."
-  cd $1
-fi
-
-echo "Downloading VOC2007 trainval ..."
-# Download data
-curl -LO http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar
-echo "Downloading VOC2007 test data ..."
-curl -LO http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar
-echo "Done downloading."
-
-# Extract data
-echo "Extracting trainval ..."
-tar -xf VOCtrainval_06-Nov-2007.tar
-echo "Extracting test ..."
-tar -xf VOCtest_06-Nov-2007.tar
-echo "removing tars ..."
-rm VOCtrainval_06-Nov-2007.tar
-rm VOCtest_06-Nov-2007.tar
+# Download/unzip images and labels
+d='.' # unzip directory
+url=https://github.com/ultralytics/yolov5/releases/download/v1.0/
+f1=VOCtrainval_06-Nov-2007.zip # 446MB, 5012 images
+f2=VOCtest_06-Nov-2007.zip     # 438MB, 4953 images
+f3=VOCtrainval_11-May-2012.zip # 1.95GB, 17126 images
+for f in $f3 $f2 $f1; do
+  echo 'Downloading' $url$f '...' 
+  curl -L $url$f -o $f && unzip -q $f -d $d && rm $f & # download, unzip, remove in background
+done
+wait # finish background tasks
 
 end=$(date +%s)
 runtime=$((end - start))
-
 echo "Completed in" $runtime "seconds"
 
-start=$(date +%s)
-
-# handle optional download dir
-if [ -z "$1" ]; then
-  # navigate to ~/tmp
-  echo "navigating to ../tmp/ ..."
-  mkdir -p ../tmp
-  cd ../tmp/
-else
-  # check if is valid directory
-  if [ ! -d $1 ]; then
-    echo $1 "is not a valid directory"
-    exit 0
-  fi
-  echo "navigating to" $1 "..."
-  cd $1
-fi
-
-echo "Downloading VOC2012 trainval ..."
-# Download data
-curl -LO http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar
-echo "Done downloading."
-
-# Extract data
-echo "Extracting trainval ..."
-tar -xf VOCtrainval_11-May-2012.tar
-echo "removing tar ..."
-rm VOCtrainval_11-May-2012.tar
-
-end=$(date +%s)
-runtime=$((end - start))
-
-echo "Completed in" $runtime "seconds"
-
-cd ../tmp
-echo "Spliting dataset..."
+echo "Splitting dataset..."
 python3 - "$@" <<END
 import xml.etree.ElementTree as ET
 import pickle
@@ -163,48 +109,29 @@ f = open('../tmp/train.txt', 'r')
 lines = f.readlines()
 
 for line in lines:
-    #print(line.split('/')[-1][:-1])
-    line = "/".join(line.split('/')[2:])
-    #print(line)
-    if (os.path.exists("../" + line[:-1])):
-        os.system("cp ../"+ line[:-1] + " ../VOC/images/train")
+    line = "/".join(line.split('/')[-5:]).strip()
+    if (os.path.exists("../" + line)):
+        os.system("cp ../"+ line + " ../VOC/images/train")
         
-print(os.path.exists('../tmp/train.txt'))
-f = open('../tmp/train.txt', 'r')
-lines = f.readlines()
-
-for line in lines:
-    #print(line.split('/')[-1][:-1])
-    line = "/".join(line.split('/')[2:])
     line = line.replace('JPEGImages', 'labels')
     line = line.replace('jpg', 'txt')
-    #print(line)
-    if (os.path.exists("../" + line[:-1])):
-        os.system("cp ../"+ line[:-1] + " ../VOC/labels/train")
+    if (os.path.exists("../" + line)):
+        os.system("cp ../"+ line + " ../VOC/labels/train")
+
 
 print(os.path.exists('../tmp/2007_test.txt'))
 f = open('../tmp/2007_test.txt', 'r')
 lines = f.readlines()
 
 for line in lines:
-    #print(line.split('/')[-1][:-1])
-    line = "/".join(line.split('/')[2:])
-    
-    if (os.path.exists("../" + line[:-1])):
-        os.system("cp ../"+ line[:-1] + " ../VOC/images/val")
-
-print(os.path.exists('../tmp/2007_test.txt'))
-f = open('../tmp/2007_test.txt', 'r')
-lines = f.readlines()
-
-for line in lines:
-    #print(line.split('/')[-1][:-1])
-    line = "/".join(line.split('/')[2:])
+    line = "/".join(line.split('/')[-5:]).strip()
+    if (os.path.exists("../" + line)):
+        os.system("cp ../"+ line + " ../VOC/images/val")
+        
     line = line.replace('JPEGImages', 'labels')
     line = line.replace('jpg', 'txt')
-    #print(line)
-    if (os.path.exists("../" + line[:-1])):
-        os.system("cp ../"+ line[:-1] + " ../VOC/labels/val")
+    if (os.path.exists("../" + line)):
+        os.system("cp ../"+ line + " ../VOC/labels/val")
 
 END
 
