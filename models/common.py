@@ -12,7 +12,6 @@ import torch.nn as nn
 from PIL import Image
 from torch.cuda import amp
 
-<<<<<<< HEAD
 if(__package__ is None or __package__ == "" or __package__ == 'models'):
     from utils.datasets import letterbox
     from utils.general import non_max_suppression, make_divisible, scale_coords, increment_path, xyxy2xywh
@@ -23,12 +22,6 @@ else:
     from ..utils.general import non_max_suppression, make_divisible, scale_coords, increment_path, xyxy2xywh
     from ..utils.plots import color_list, plot_one_box
     from ..utils.torch_utils import time_synchronized
-=======
-from utils.datasets import letterbox
-from utils.general import non_max_suppression, make_divisible, scale_coords, increment_path, xyxy2xywh
-from utils.plots import color_list, plot_one_box
-from utils.torch_utils import time_synchronized
->>>>>>> aff03be35a8f5c7fb7da8bfd2f26a93cde416fbc
 
 
 def autopad(k, p=None):  # kernel, padding
