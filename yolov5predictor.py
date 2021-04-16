@@ -4,7 +4,13 @@ import torch
 from .models import yolo
 from .utils.datasets import preprocessImage
 from .utils.general import non_max_suppression, scale_coords
+import onnx
+import onnxruntime
 
+###Very important!:####
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+########################
 
 class Yolov5Predictor:
     def __init__(self, img_shape, conf_thres, iou_thres, yolo_model, stride=32):
@@ -19,8 +25,15 @@ class Yolov5Predictor:
         """
         img_shape: (height, width)
         """
-        yolo_model = torch.load(weights_path, map_location=device, pickle_module=unpickler)['model'].float().eval()
-        stride = int(yolo_model.stride.max())
+        if(weights_path[-5:] == '.onnx'):
+            onnx_model = onnx.load(weights_path)
+            onnx.checker.check_model(onnx_model)
+            ort_session = onnxruntime.InferenceSession(weights_path)
+            yolo_model = ort_session
+            stride = 32  # FIXME
+        else:
+            yolo_model = torch.load(weights_path, map_location=device, pickle_module=unpickler)['model'].float().eval()
+            stride = int(yolo_model.stride.max())
         predictor = Yolov5Predictor(img_shape, conf_thres, iou_thres, yolo_model, stride=stride)
 
         return predictor
@@ -33,9 +46,18 @@ class Yolov5Predictor:
         return img
 
     def detect(self, img0):
+        # import sys
         with torch.no_grad():
             img = self.preProcessImage(img0)
-            preds = self.yolo_model(img)[0].cpu()
+            if(isinstance(self.yolo_model, torch.nn.Module)):
+                preds = self.yolo_model(img)[0].cpu()
+            else:
+                ort_inputs = {self.yolo_model.get_inputs()[0].name: img.cpu().numpy()}
+                ort_outs = self.yolo_model.run(None, ort_inputs)[0]
+                preds = torch.from_numpy(ort_outs)
+
+            # print(preds.shape)
+            # sys.exit(1)
             preds = non_max_suppression(preds, self.conf_thres, self.iou_thres, classes=None, agnostic=None)[0]
 
             if(preds is None):
